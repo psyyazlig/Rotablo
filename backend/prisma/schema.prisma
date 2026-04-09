@@ -1,0 +1,202 @@
+// schema.prisma
+
+datasource db {
+  // Production için postgresql olarak değiştirilecek, test için sqlite tutuluyor
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// -----------------------------------------------------------------------------
+// LAYER 1: CURATED CONTENT (READ-ONLY FOR USERS)
+// -----------------------------------------------------------------------------
+
+model Route {
+  id                String   @id // e.g., 'route:r01'
+  code              String   @unique
+  name              String
+  family            String   // 'main' | 'bypass' | 'connector'
+  plannedDistanceKm Float
+  plannedStageCount Int
+  status            String   // 'active' | 'draft'
+
+  stages            Stage[]
+  tripPlans         TripPlan[]
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model Stage {
+  id                  String   @id // e.g., 'stage:r01:01-03'
+  routeId             String
+  route               Route    @relation(fields: [routeId], references: [id])
+  code                String
+  sequenceIndex       Int
+  dayNumber           Int?
+  dayLabel            String?
+  distanceKm          Float
+  difficultyScore     Int      // 1-5
+  sceneryScore        Int      // 1-10
+  questTags           String   // JSON stringified array or simply comma separated for sqlite
+  
+  detourAnchorName    String?
+  detourKm            Float    @default(0)
+  primaryVisitName    String?
+  primaryVisitSummary String?
+  
+  lodgingEco          Boolean  @default(false)
+  lodgingMid          Boolean  @default(false)
+  lodgingLuxury       Boolean  @default(false)
+
+  achievementTitle    String?
+
+  hazardProfileId     String?
+  hazardProfile       HazardProfile? @relation(fields: [hazardProfileId], references: [id])
+
+  sideQuests          SideQuest[]
+
+  createdAt           DateTime @default(now())
+}
+
+model SideQuest {
+  id              String   @id // e.g., 'sq:r01:1'
+  hostStageId     String
+  hostStage       Stage    @relation(fields: [hostStageId], references: [id])
+  distanceKm      Float
+  questTags       String   // JSON stringified
+
+  hazardProfileId String?
+  hazardProfile   HazardProfile? @relation(fields: [hazardProfileId], references: [id])
+}
+
+model HazardProfile {
+  id                    String      @id @default(uuid())
+  lowClearanceRisk      Boolean     @default(false)
+  hairpinDensity        Boolean     @default(false)
+  coldSurfaceRisk       Boolean     @default(false)
+  highAltitudeRisk      Boolean     @default(false)
+  roughSurfaceRisk      Boolean     @default(false)
+  notes                 String?
+
+  stages                Stage[]
+  sideQuests            SideQuest[]
+}
+
+model AchievementDefinition {
+  id          String   @id
+  code        String   @unique
+  title       String
+  scope       String   // 'stage' | 'route' | 'sideQuest' | 'milestone'
+  xpReward    Int
+
+  progresses  AchievementProgress[]
+}
+
+// -----------------------------------------------------------------------------
+// LAYER 2: SYSTEM / AUTH
+// -----------------------------------------------------------------------------
+
+model User {
+  id          String   @id // References Supabase auth.users(id)
+  email       String   @unique
+  username    String?
+
+  vehicles    VehicleProfile[]
+  trips       TripPlan[]
+  completions StageCompletion[]
+  achievements AchievementProgress[]
+  xpLedgers   XPLedger[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// -----------------------------------------------------------------------------
+// LAYER 3: USER STATE / RUNTIME (READ-WRITE)
+// -----------------------------------------------------------------------------
+
+model VehicleProfile {
+  id                   String   @id @default(uuid())
+  userId               String
+  user                 User     @relation(fields: [userId], references: [id])
+  brand                String
+  model                String
+  bodyType             String   // 'sedan', 'suv', etc.
+  drivetrain           String   // 'fwd', 'rwd', 'awd', '4wd'
+  groundClearanceClass String   // 'low', 'medium', 'high'
+  tireSeason           String   // 'summer', 'allSeason', 'winter'
+  isPrimary            Boolean  @default(false)
+
+  tripPlans            TripPlan[]
+
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+model TripPlan {
+  id                  String   @id @default(uuid())
+  userId              String
+  user                User     @relation(fields: [userId], references: [id])
+  routeId             String
+  route               Route    @relation(fields: [routeId], references: [id])
+  vehicleProfileId    String
+  vehicle             VehicleProfile @relation(fields: [vehicleProfileId], references: [id])
+  
+  status              String   // 'draft', 'active', 'completed'
+  selectedStageCount  Int      @default(0)
+  plannedDistanceKm   Float    @default(0)
+
+  // Budget snapshot (String/JSONText)
+  budgetSnapshot      String?
+
+  selections          TripSelection[]
+  completions         StageCompletion[]
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+model TripSelection {
+  id          String   @id @default(uuid())
+  tripPlanId  String
+  tripPlan    TripPlan @relation(fields: [tripPlanId], references: [id], onDelete: Cascade)
+  entityType  String   // 'stage' | 'sideQuest'
+  entityId    String   // Stage.id or SideQuest.id
+  isIncluded  Boolean  @default(true)
+}
+
+model StageCompletion {
+  id               String   @id @default(uuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id])
+  tripPlanId       String?
+  tripPlan         TripPlan? @relation(fields: [tripPlanId], references: [id])
+  
+  entityType       String   // 'stage' | 'sideQuest'
+  entityId         String
+  completionSource String   @default("manual") // Force V1 to be manual
+  completedAt      DateTime @default(now())
+}
+
+model AchievementProgress {
+  id                      String   @id @default(uuid())
+  userId                  String
+  user                    User     @relation(fields: [userId], references: [id])
+  achievementDefinitionId String
+  achievement             AchievementDefinition @relation(fields: [achievementDefinitionId], references: [id])
+  awardedAt               DateTime @default(now())
+}
+
+model XPLedger {
+  id               String   @id @default(uuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id])
+  amount           Int
+  reasonType       String   // 'stage_completion', 'route_bonus', 'achievement'
+  reasonEntityId   String?
+  createdAt        DateTime @default(now())
+}
